@@ -12,10 +12,7 @@
  */
 package org.openhab.binding.mqtt.generic.internal.handler;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -23,11 +20,13 @@ import java.util.stream.Stream;
 import org.apache.commons.lang.StringUtils;
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
+import org.eclipse.smarthome.config.core.Configuration;
 import org.eclipse.smarthome.core.thing.Channel;
 import org.eclipse.smarthome.core.thing.ChannelUID;
 import org.eclipse.smarthome.core.thing.Thing;
 import org.eclipse.smarthome.core.thing.ThingStatus;
 import org.eclipse.smarthome.core.thing.ThingStatusDetail;
+import org.eclipse.smarthome.core.thing.binding.builder.ChannelBuilder;
 import org.eclipse.smarthome.core.thing.type.ChannelTypeUID;
 import org.eclipse.smarthome.core.types.StateDescription;
 import org.eclipse.smarthome.io.transport.mqtt.MqttBrokerConnection;
@@ -38,11 +37,15 @@ import org.openhab.binding.mqtt.generic.ChannelStateTransformation;
 import org.openhab.binding.mqtt.generic.ChannelStateUpdateListener;
 import org.openhab.binding.mqtt.generic.MqttChannelStateDescriptionProvider;
 import org.openhab.binding.mqtt.generic.TransformationServiceProvider;
+import org.openhab.binding.mqtt.generic.internal.MqttBindingConstants;
 import org.openhab.binding.mqtt.generic.utils.FutureCollector;
 import org.openhab.binding.mqtt.generic.values.Value;
 import org.openhab.binding.mqtt.generic.values.ValueFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 
 /**
  * This handler manages manual created Things with manually added channels to link to MQTT topics.
@@ -141,6 +144,8 @@ public class GenericMQTTThingHandler extends AbstractMQTTThingHandler implements
 
     @Override
     public void initialize() {
+        updateThing();
+
         GenericThingConfiguration config = getConfigAs(GenericThingConfiguration.class);
 
         String availabilityTopic = config.availabilityTopic;
@@ -183,6 +188,52 @@ public class GenericMQTTThingHandler extends AbstractMQTTThingHandler implements
             return;
         }
         super.initialize();
+    }
+
+    public void updateThing() {
+        if (thing.getProperties().containsKey("payload")) {
+            logger.info("Payload found, auto configuring channes: {}", thing.getUID());
+            String configPayload = thing.getProperties().get("payload");
+            try {
+                Gson gson = new GsonBuilder().create();
+                Map data = gson.fromJson(configPayload, Map.class);
+                List<Channel> newChannels = new ArrayList<>();
+
+                if (data.containsKey("channels")) {
+                    Collection<Map> channels = (Collection<Map>) data.get("channels");
+                    for (Map channel : channels) {
+                        String id = channel.get("id").toString();
+                        String label = channel.getOrDefault("label", id).toString();
+                        String type = channel.getOrDefault("type", MqttBindingConstants.STRING).toString();
+
+                        // ToDo: Figure out how to mark channel as advanced
+
+                        ChannelUID channelUID = new ChannelUID(thing.getUID(), id);
+                        ChannelTypeUID channelTypeUID = new ChannelTypeUID(MqttBindingConstants.BINDING_ID, type);
+
+                        Configuration configuration = new Configuration(channel);
+                        Value value = ValueFactory.createValueState(new ChannelConfig(), type);
+
+                        newChannels.add(ChannelBuilder.create(channelUID, value.getItemType()).withLabel(label)
+                                .withType(channelTypeUID).withConfiguration(configuration).build());
+                    }
+                }
+
+                Configuration thingConfiguration = new Configuration();
+                thingConfiguration.put("availabilityTopic", data.getOrDefault("availabilityTopic", "").toString());
+                thingConfiguration.put("payloadAvailable", data.getOrDefault("payloadAvailable", "").toString());
+                thingConfiguration.put("payloadNotAvailable", data.getOrDefault("payloadNotAvailable", "").toString());
+
+                // Remove payload, when configuration is done
+                HashMap<String, String> map = new HashMap<>(thing.getProperties());
+                map.remove("payload");
+                updateThing(editThing().withProperties(map).withChannels(newChannels)
+                        .withConfiguration(thingConfiguration).build());
+
+            } catch (Exception e) {
+                logger.warn("Failed to configure thing {}", thing.getUID(), e);
+            }
+        }
     }
 
     @Override
